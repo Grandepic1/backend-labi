@@ -1,0 +1,26 @@
+[project]
+name = "backend-labi"
+version = "0.1.0"
+description = "FastAPI backend for LabI"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "alembic>=1.14",
+    "asyncmy>=0.2",
+    "cryptography>=44.0",
+    "fastapi>=0.115",
+    "greenlet>=3.0",
+    "pydantic-settings>=2.5",
+    "pymysql>=1.1",
+    "sqlalchemy>=2.0",
+    "uvicorn[standard]>=0.34",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28",
+    "pytest>=8.0",
+]
+
+[tool.alembic]
+script_location = "alembic"
