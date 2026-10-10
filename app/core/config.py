@@ -14,8 +14,50 @@ class Settings(BaseSettings):
     )
 
     APP_NAME: str = "backend-labi"
-    APP_ENV: str = "development"
+    APP_ENV: str = "development"  # development | production
     DEBUG: bool = True
+
+    @property
+    def is_production(self) -> bool:
+        return self.APP_ENV.strip().lower() == "production"
+
+    @property
+    def debug_mode(self) -> bool:
+        """Effective debug flag — always off in production."""
+        return self.DEBUG and not self.is_production
+
+    @property
+    def sql_echo(self) -> bool:
+        """SQL statement logging — dev only, never in production."""
+        return self.debug_mode
+
+    @property
+    def docs_url(self) -> str | None:
+        return None if self.is_production else "/docs"
+
+    @property
+    def redoc_url(self) -> str | None:
+        return None if self.is_production else "/redoc"
+
+    # CORS — list your frontend domains here (comma-separated in .env):
+    # FRONTEND_URLS=http://localhost:3000,https://app.example.com
+    # Kept as a plain string because pydantic-settings JSON-decodes
+    # list-typed env values before validators run; use cors_origins.
+    FRONTEND_URLS: str = "http://localhost:3000"
+
+    @property
+    def cors_origins(self) -> list[str]:
+        v = self.FRONTEND_URLS.strip()
+        if v.startswith("["):
+            import json
+
+            return [str(o).rstrip("/") for o in json.loads(v)]
+        return [o.strip().rstrip("/") for o in v.split(",") if o.strip()]
+
+    # Auth (JWT)
+    SECRET_KEY: str = "change-me-in-production"
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
     # MySQL connection parts (matches existing .env keys)
     DB_HOST: str = "127.0.0.1"

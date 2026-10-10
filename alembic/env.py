@@ -13,8 +13,12 @@ from app.models import Base  # noqa: E402  (import models for autogenerate)
 
 config = context.config
 
-# Override sqlalchemy.url from settings (.env / DATABASE_URL)
-config.set_main_option("sqlalchemy.url", settings.sqlalchemy_database_url)
+# Override sqlalchemy.url from settings (.env / DATABASE_URL).
+# configparser treats % as interpolation syntax, so escape it (%%);
+# it is un-escaped back to % when the value is read.
+config.set_main_option(
+    "sqlalchemy.url", settings.sqlalchemy_database_url.replace("%", "%%")
+)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

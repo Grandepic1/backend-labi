@@ -17,7 +17,7 @@ class Base(DeclarativeBase):
 engine = create_async_engine(
     settings.sqlalchemy_async_url,
     pool_pre_ping=True,
-    echo=settings.DEBUG,
+    echo=settings.sql_echo,
 )
 
 AsyncSessionLocal = async_sessionmaker(
