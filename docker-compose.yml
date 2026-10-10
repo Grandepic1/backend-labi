@@ -1,0 +1,35 @@
+# backend-labi — service-level runtime (replaces the old systemd unit).
+#
+#   docker compose up -d --build   # first run / after dependency changes
+#   docker compose restart api     # after code changes (no rebuild needed)
+#   docker compose logs -f api
+#
+# Source is bind-mounted (.:/app), so edits apply on restart — nothing is
+# baked into the image. The host's .venv (if any) is ignored: the container
+# uses its own venv at /opt/venv via UV_PROJECT_ENVIRONMENT (see Dockerfile).
+
+services:
+  api:
+    build: .
+    image: backend-labi:latest
+    container_name: backend-labi-api
+    restart: unless-stopped
+    stop_grace_period: 30s
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - uv-cache:/root/.cache/uv
+    ports:
+      - "127.0.0.1:9008:9008"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "/opt/venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9008/api/v1/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  uv-cache:

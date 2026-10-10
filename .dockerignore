@@ -1,0 +1,7 @@
+# Keep secrets and host-only files out of the build context.
+# (Runtime config comes from env_file + the bind mount, not the image.)
+.venv/
+__pycache__/
+*.pyc
+.git/
+.env
