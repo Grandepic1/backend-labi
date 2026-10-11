@@ -17,12 +17,19 @@ services:
     stop_grace_period: 30s
     env_file:
       - .env
+    environment:
+      # Inside the container, the docker host is NOT 127.0.0.1 (that's the
+      # container itself). This overrides the .env value for the container
+      # only, so the .env can keep DB_HOST=127.0.0.1 for host-side commands
+      # like `uv run alembic upgrade head`. (`environment` beats `env_file`.)
+      - DB_HOST=host.docker.internal
     volumes:
       - .:/app
       - uv-cache:/root/.cache/uv
     ports:
       - "127.0.0.1:9008:9008"
     extra_hosts:
+      # Resolves host.docker.internal to the host gateway (host-side MySQL).
       - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "/opt/venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9008/api/v1/health')"]
