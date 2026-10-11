@@ -43,17 +43,17 @@ async def login(
     form: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db),
 ) -> Token:
+    # Login is email + password only. OAuth2PasswordRequestForm names the
+    # field "username"; we treat its value as the user's email. Matching on
+    # the unique email column keeps this look-up unambiguous.
+    email = form.username.strip()
     user = (
-        await db.execute(
-            select(Users).where(
-                or_(Users.username == form.username, Users.email == form.username)
-            )
-        )
+        await db.execute(select(Users).where(Users.email == email))
     ).scalar_one_or_none()
     if user is None or not verify_password(form.password, user.password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
+            detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
     return Token(access_token=create_access_token(str(user.id)))
