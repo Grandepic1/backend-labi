@@ -82,9 +82,10 @@ curl -X POST localhost:9008/api/v1/auth/register `
   -H "Content-Type: application/json" `
   -d '{"username":"alice","email":"alice@example.com","password":"Secret123!"}'
 
-# Login (username or email) -> {"access_token": "...", "token_type": "bearer"}
+# Login (email + password) -> {"access_token": "...", "token_type": "bearer"}
+# OAuth2 names the field "username" — pass the account's email as its value.
 curl -X POST localhost:9008/api/v1/auth/login `
-  -F "username=alice" -F "password=Secret123!"
+  -F "username=alice@example.com" -F "password=Secret123!"
 
 # Me (pass the token)
 curl localhost:9008/api/v1/auth/me -H "Authorization: Bearer <token>"
@@ -92,6 +93,43 @@ curl localhost:9008/api/v1/auth/me -H "Authorization: Bearer <token>"
 
 Set a real `SECRET_KEY` in `.env` for production. Protect routes with
 `Depends(get_current_user)` from `app.api.deps`.
+
+## Survivor personalization (onboarding)
+
+The app runs a personalization step right after login, where the companion
+(pendamping) fills in a profile for the survivor (penyintas) they accompany. It
+is a singleton per account: a companion accompanies exactly one survivor, so the
+profile lives in `survivor_profiles` with a unique `user_id`. That is also what
+tells the app whether onboarding is done — `GET` returns `404` until a profile
+exists.
+
+```powershell
+# Get my survivor profile (404 before onboarding)
+curl localhost:9008/api/v1/me/survivor-profile -H "Authorization: Bearer <token>"
+
+# Create or replace it (idempotent — safe to re-submit onboarding)
+curl -X PUT localhost:9008/api/v1/me/survivor-profile `
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" `
+  -d '{`
+    "name": "Bu Siti",`
+    "age_range": "70-79",`
+    "primary_language": "jv",`
+    "communication_goals": ["everyday_storytelling", "answering_questions"],`
+    "instruction_preference": "short_simple",`
+    "preferred_session_duration": "5",`
+    "preferred_topics": ["family", "food"],`
+    "practice_mode": "companion",`
+    "personalization_confirmed": true`
+  }'
+
+# Remove it (runs personalization again)
+curl -X DELETE localhost:9008/api/v1/me/survivor-profile -H "Authorization: Bearer <token>"
+```
+
+`name` is the survivor's nickname (required, 1-50 chars). Every other field is
+optional and accepts only the values the app offers during personalization; see
+`app/schemas/survivor_profile.py` for the exact enums. `communication_goals` and
+`preferred_topics` are lists stored as JSON and are deduplicated.
 
 ## Alembic
 
@@ -114,9 +152,8 @@ only a restart, dependencies live in the image venv (`uv run` = venv python).
 
 ```bash
 # Server .env must have: APP_ENV=production, a real SECRET_KEY,
-# FRONTEND_URLS with your domain(s), and DB_HOST=host.docker.internal
-# (MySQL runs on the docker host; 127.0.0.1 inside the container
-# means the container itself).
+# FRONTEND_URLS with your domain(s), and DB_HOST=127.0.0.1 (host-side MySQL;
+# docker-compose overrides it to host.docker.internal inside the container).
 
 # 1. App service (localhost-only :9008, auto-migrates on start)
 docker compose up -d --build
