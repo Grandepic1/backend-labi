@@ -15,6 +15,12 @@ router = APIRouter(prefix="/auth")
 
 @router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
 async def register(data: UserCreate, db: AsyncSession = Depends(get_db)) -> Users:
+    role = (data.role or "caregiver").strip().lower()
+    if role not in ("caregiver", "admin"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="role must be 'caregiver' or 'admin'",
+        )
     existing = (
         await db.execute(
             select(Users).where(
@@ -31,6 +37,7 @@ async def register(data: UserCreate, db: AsyncSession = Depends(get_db)) -> User
         username=data.username,
         email=str(data.email),
         password=hash_password(data.password),
+        role=role,
     )
     db.add(user)
     await db.commit()

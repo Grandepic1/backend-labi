@@ -59,6 +59,19 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
+    # Labi MVP — local private audio storage.
+    # Recordings are stored under STORAGE_DIR and served only via
+    # authorized endpoints.
+    STORAGE_DIR: str = "./storage"
+    # 25 MB as configurable initial limit.
+    MAX_UPLOAD_BYTES: int = 25 * 1024 * 1024
+    # Allowed audio MIME types.
+    ALLOWED_AUDIO_MIME: str = "audio/webm,audio/mp4,audio/mpeg,audio/wav,audio/x-wav,audio/ogg"
+
+    @property
+    def allowed_audio_mime_set(self) -> set[str]:
+        return {m.strip().lower() for m in self.ALLOWED_AUDIO_MIME.split(",") if m.strip()}
+
     # MySQL connection parts (matches existing .env keys)
     DB_HOST: str = "127.0.0.1"
     DB_PORT: int = 3306

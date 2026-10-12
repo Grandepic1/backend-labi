@@ -12,3 +12,6 @@ wheels/
 # Env
 .env
 !.env.example
+
+# Labi local audio storage (private, never commit recordings)
+/storage/
