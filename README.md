@@ -20,6 +20,38 @@ uv run python main.py
 
 Health: `GET /api/v1/health`
 
+## Labi MVP (IU Recall)
+
+Adapted from `Labi_PRD_MVP_IU_Recall.md` to this repo (not from zero):
+
+| PRD | This repo |
+|---|---|
+| Postgres + UUID | MySQL + Integer PKs (matches existing `users.id`) |
+| `JSONB` / `TIMESTAMPTZ` | `JSON` / `DATETIME` |
+| S3/GCS object storage | `STORAGE_DIR/recordings/` local private dir, authorized streaming only |
+| `users` from elsewhere | Local `users` extended with `role` (`caregiver` default, `admin`) |
+| Participants assumed | Minimal `POST/GET /participants` added |
+| Error envelope `{error:{code,…}}` | FastAPI-native `{detail}`; domain blocks use `422` with `ASSESSMENT_INCOMPLETE` prefix |
+
+Flow: `POST /participants` → `GET /stories` → `POST /sessions`
+→ `POST /sessions/{id}/recording` (multipart `file`, optional `duration_ms`,
+`recorded_at`, `transcript_text`) → `GET .../recording` (stream)
+→ `PUT .../assessment` (draft, repeatable) → `POST .../complete`
+→ `GET .../result` + `GET /sessions` (history). Transcripts:
+`POST/GET .../transcript`. Admin: `POST /admin/stories`,
+`PUT /admin/stories/{id}` (new draft version), `POST/PUT/DELETE
+.../ius`, `POST .../publish` (needs ≥1 IU), `POST .../archive`.
+
+```powershell
+copy .env.example .env   # set DB_* + SECRET_KEY, tune STORAGE_DIR / MAX_UPLOAD_BYTES
+uv run alembic upgrade head
+uv run python scripts/seed_labi.py   # demo story "Perjalanan ke Pasar" (9 IUs)
+```
+
+Register a caregiver, or pass `"role":"admin"` once to bootstrap an admin.
+Recordings stream only with a valid JWT of the owning caregiver (or admin);
+`IU Recall (%) = met/total*100` is always recomputed backend-side.
+
 ## Environments (`APP_ENV`)
 
 `APP_ENV=development` (default) vs `APP_ENV=production`:
