@@ -15,3 +15,6 @@ wheels/
 
 # Labi local audio storage (private, never commit recordings)
 /storage/
+
+# Local ASR model weights (downloaded by scripts/fetch_asr_model.py)
+/models/
