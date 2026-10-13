@@ -40,3 +40,8 @@ class UserRead(BaseModel):
     role: str = "caregiver"
     created_at: datetime
     updated_at: datetime
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr = Field(max_length=100)
+    password: str = Field(min_length=1, max_length=BCRYPT_MAX_PASSWORD_BYTES)

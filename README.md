@@ -82,10 +82,10 @@ curl -X POST localhost:9008/api/v1/auth/register `
   -H "Content-Type: application/json" `
   -d '{"username":"alice","email":"alice@example.com","password":"Secret123!"}'
 
-# Login (email + password) -> {"access_token": "...", "token_type": "bearer"}
-# OAuth2 names the field "username" — pass the account's email as its value.
+# Login (email + password JSON) -> {"access_token": "...", "token_type": "bearer"}
 curl -X POST localhost:9008/api/v1/auth/login `
-  -F "username=alice@example.com" -F "password=Secret123!"
+  -H "Content-Type: application/json" `
+  -d '{"email":"alice@example.com","password":"Secret123!"}'
 
 # Me (pass the token)
 curl localhost:9008/api/v1/auth/me -H "Authorization: Bearer <token>"
