@@ -17,6 +17,7 @@ from app.models.labi_session import (
 )
 from app.models.participant import Participant
 from app.models.story import Story, StoryInformationUnit, StoryVersion
+from app.models.SurvivorProfiles import SurvivorProfiles
 from app.models.Users import Users
 
 __all__ = [
@@ -34,6 +35,7 @@ __all__ = [
     "Story",
     "StoryInformationUnit",
     "StoryVersion",
+    "SurvivorProfiles",
     "Transcript",
     "Users",
 ]
