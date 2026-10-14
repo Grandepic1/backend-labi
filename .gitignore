@@ -18,3 +18,4 @@ wheels/
 
 # Local ASR model weights (downloaded by scripts/fetch_asr_model.py)
 /models/
+.workbuddy-ai

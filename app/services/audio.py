@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import subprocess
 from pathlib import Path
 
 from app.core.config import settings
@@ -19,24 +20,33 @@ _SILENCE_START_RE = re.compile(r"silence_start:\s*(-?[\d.]+)")
 _SILENCE_END_RE = re.compile(r"silence_end:\s*(-?[\d.]+)")
 
 
-async def _run(argv: list[str]) -> tuple[int, bytes, bytes]:
+def _run_blocking(argv: list[str]) -> tuple[int, bytes, bytes]:
+    """Invoke the audio tool on a worker thread.
+
+    ``asyncio.create_subprocess_exec`` cannot be used here. On Windows, uvicorn
+    selects a ``SelectorEventLoop`` whenever it runs with ``reload`` (which is
+    the case in development), and that loop does not implement subprocess
+    support at all -- it raises a bare ``NotImplementedError`` with no message,
+    which surfaced only as an opaque ``INTERNAL`` analysis failure. A blocking
+    ``subprocess.run`` on a worker thread behaves the same on every platform and
+    every event loop, and its timeout actually terminates the child process.
+    """
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        completed = subprocess.run(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=settings.FFMPEG_TIMEOUT_SECONDS,
         )
     except FileNotFoundError as exc:
         raise AudioToolMissing(f"{argv[0]} not found") from exc
-    try:
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=settings.FFMPEG_TIMEOUT_SECONDS
-        )
-    except TimeoutError as exc:
-        proc.kill()
-        await proc.wait()
+    except subprocess.TimeoutExpired as exc:
         raise AudioToolFailed(f"{argv[0]} timed out") from exc
-    return proc.returncode or 0, stdout, stderr
+    return completed.returncode or 0, completed.stdout, completed.stderr
+
+
+async def _run(argv: list[str]) -> tuple[int, bytes, bytes]:
+    return await asyncio.to_thread(_run_blocking, argv)
 
 
 async def probe_duration_ms(path: Path) -> int:

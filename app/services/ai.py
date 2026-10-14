@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -9,6 +10,13 @@ from app.core.config import settings
 IU_STATUS_VALUES = ("met", "not_met", "unclear")
 _MAX_FIELD_CHARS = 2000
 _EVIDENCE_MAX_CHARS = 120
+
+# Upstream overload is transient: Gemini returns 503 "high demand" spikes and
+# 429 when throttled. Retrying with backoff keeps a single blip from failing an
+# otherwise healthy analysis run.
+_RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
+_RETRY_ATTEMPTS = 5
+_RETRY_BASE_DELAY = 2.0  # seconds; doubles per attempt -> 2s, 4s, 8s, 16s
 
 
 class AiNotConfigured(RuntimeError):
@@ -136,21 +144,28 @@ def _clean_text(value: object) -> str | None:
 
 
 async def _complete(client: httpx.AsyncClient, messages: list[dict]) -> str:
-    try:
-        response = await client.post(
-            f"{settings.AI_BASE_URL.rstrip('/')}/chat/completions",
-            headers={"Authorization": f"Bearer {settings.AI_API_KEY}"},
-            json={"model": settings.AI_MODEL, "temperature": 0, "messages": messages},
-        )
-    except httpx.HTTPError as exc:
-        # Never echo the request body (it carries the transcript).
-        raise AiRequestFailed(f"{type(exc).__name__}: {settings.AI_BASE_URL}/chat/completions") from exc
-    if response.status_code >= 400:
-        raise AiRequestFailed(f"{response.status_code} from {settings.AI_BASE_URL}/chat/completions")
-    try:
-        return response.json()["choices"][0]["message"]["content"]
-    except (ValueError, KeyError, IndexError, TypeError) as exc:
-        raise AiInvalidOutput("respons LLM tidak berisi choices[0].message.content") from exc
+    last_error = "AI request failed"
+    for attempt in range(1, _RETRY_ATTEMPTS + 1):
+        try:
+            response = await client.post(
+                f"{settings.AI_BASE_URL.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.AI_API_KEY}"},
+                json={"model": settings.AI_MODEL, "temperature": 0, "messages": messages},
+            )
+        except httpx.HTTPError as exc:
+            # Never echo the request body (it carries the transcript).
+            raise AiRequestFailed(f"{type(exc).__name__}: {settings.AI_BASE_URL}/chat/completions") from exc
+        if response.status_code >= 400:
+            last_error = f"{response.status_code} from {settings.AI_BASE_URL}/chat/completions"
+            if response.status_code in _RETRY_STATUS and attempt < _RETRY_ATTEMPTS:
+                await asyncio.sleep(_RETRY_BASE_DELAY * (2 ** (attempt - 1)))
+                continue
+            raise AiRequestFailed(last_error)
+        try:
+            return response.json()["choices"][0]["message"]["content"]
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            raise AiInvalidOutput("respons LLM tidak berisi choices[0].message.content") from exc
+    raise AiRequestFailed(last_error)
 
 
 async def suggest_iu_statuses(*, story_text: str, ius: list[dict], transcript: str) -> list[dict]:

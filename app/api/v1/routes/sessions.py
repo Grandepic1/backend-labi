@@ -861,6 +861,10 @@ async def _execute_run(run_id: int, session_id: int, data: AnalysisRunIn) -> Non
                         created_by=run.created_by,
                     )
                 )
+                # The session disables autoflush, so the INSERT must be pushed
+                # explicitly: the speech-metrics and IU steps below read the
+                # transcript back within this same transaction.
+                await db.flush()
 
             if data.run_speech_metrics:
                 steps.append("speech_metrics")
@@ -885,7 +889,10 @@ async def _execute_run(run_id: int, session_id: int, data: AnalysisRunIn) -> Non
             await db.commit()
         except Exception as exc:  # noqa: BLE001 — recorded, never raised
             code = _error_code_for(exc)
-            logger.error("analysis run %s failed: %s", run_id, code)
+            # Full traceback, not just the code: the run row keeps only a short
+            # code and some exceptions stringify to "" (a bare
+            # NotImplementedError, for one), which left this undiagnosable.
+            logger.exception("analysis run %s failed: %s", run_id, code)
             # Single-transaction run: this discards every uncommitted row,
             # so a failed run leaves no partial artifacts behind.
             await db.rollback()
@@ -896,7 +903,7 @@ async def _execute_run(run_id: int, session_id: int, data: AnalysisRunIn) -> Non
                 return
             failed.status = "failed"
             failed.error_code = code
-            failed.error_message = str(exc)[:500]
+            failed.error_message = (str(exc) or type(exc).__name__)[:500]
             failed.finished_at = _now()
             await db.commit()
 
