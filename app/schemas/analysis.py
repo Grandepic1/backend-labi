@@ -2,6 +2,8 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
+from app.schemas.training import ActionableGuidanceRead, TrainingLogRead
+
 
 class AnalysisRunIn(BaseModel):
     run_transcription: bool = True
@@ -14,6 +16,7 @@ class SilentPauseRead(BaseModel):
     start_ms: int
     end_ms: int
     duration_ms: int
+    duration_log: float | None = None
 
 
 class SpeechMetricsRead(BaseModel):
@@ -30,6 +33,10 @@ class SpeechMetricsRead(BaseModel):
     silent_pause_mean_ms: float | None = None
     silent_pause_median_ms: float | None = None
     silent_pause_sd_ms: float | None = None
+    silent_pause_mean_log: float | None = None
+    silent_pause_median_log: float | None = None
+    silent_pause_sd_log: float | None = None
+    silent_pause_total_log: float | None = None
     speech_rate: float | None = None
     articulation_rate: float | None = None
     speech_rate_wpm: float | None = None
@@ -63,12 +70,16 @@ class AnalysisRead(BaseModel):
     transcript_source: str | None = None
     speech_metrics: SpeechMetricsRead | None = None
     iu_suggestions: list[IuSuggestionRead] = []
+    actionable_guidance: ActionableGuidanceRead | None = None
+    training_logs: list[TrainingLogRead] = []
     started_at: datetime
     finished_at: datetime | None = None
 
 
 class TrendPoint(BaseModel):
     session_id: int
+    session_number: int | None = None
+    session_label: str | None = None
     completed_at: datetime | None = None
     iu_recall_percent: float | None = None
     speech_rate: float | None = None
@@ -78,6 +89,11 @@ class TrendPoint(BaseModel):
     silent_pause_count: int | None = None
     syllable_count: int | None = None
     word_count: int | None = None
+    recommended_mode: str | None = None
+    training_target_goal: str | None = None
+    trainings_completed_count: int = 0
+    urgency_level: str | None = None
+    clinical_interpretation: str | None = None
 
 
 class TrendDelta(BaseModel):
@@ -88,11 +104,27 @@ class TrendDelta(BaseModel):
     silent_pause_total_ms: float | None = None
 
 
+class CaregiverReportRead(BaseModel):
+    headline: str
+    status_badge: str
+    assessment_summary: str
+    treatment_progress: str
+    key_findings: list[str] = []
+    caregiver_action_plan: str
+    medical_alert: str | None = None
+
+
 class ParticipantTrendRead(BaseModel):
     participant_id: int
     display_name: str
     session_count: int
+    total_trainings_completed: int = 0
+    current_recommended_mode: str | None = None
+    current_target_goal: str | None = None
     series: list[TrendPoint] = []
     baseline: TrendPoint | None = None
     latest: TrendPoint | None = None
     deltas: TrendDelta | None = None
+    progression_note: str | None = None
+    caregiver_report: CaregiverReportRead | None = None
+

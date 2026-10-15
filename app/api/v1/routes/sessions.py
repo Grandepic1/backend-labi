@@ -1,4 +1,5 @@
 import logging
+import math
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -21,10 +22,13 @@ from app.models import (
     SessionIuSuggestion,
     SessionSilentPause,
     SessionSpeechMetrics,
+    SessionTrainingLog,
+    SessionTrainingRecommendation,
     Story,
     StoryInformationUnit,
     StoryVersion,
     Transcript,
+    SurvivorProfiles,
     Users,
 )
 from app.schemas.analysis import (
@@ -33,6 +37,12 @@ from app.schemas.analysis import (
     IuSuggestionRead,
     SilentPauseRead,
     SpeechMetricsRead,
+)
+from app.schemas.training import (
+    ActionableGuidanceRead,
+    SessionTrainingRecommendationRead,
+    TrainingLogCreate,
+    TrainingLogRead,
 )
 from app.schemas.assessment import (
     AssessmentItemIn,
@@ -67,7 +77,12 @@ from app.services.scoring import (
     iu_recall_percent,
     summarize_statuses,
 )
-from app.services.speech_metrics import EDGE_TOLERANCE_MS, compute_speech_metrics, internal_pauses
+from app.services.speech_metrics import (
+    EDGE_TOLERANCE_MS,
+    compute_log_pause_metrics,
+    compute_speech_metrics,
+    internal_pauses,
+)
 from app.services.storage import resolve_path, save_upload
 
 router = APIRouter(tags=["sessions"])
@@ -750,7 +765,7 @@ def _now() -> datetime:
 
 async def _store_speech_metrics(db: AsyncSession, session_id: int, run_id: int, path) -> None:
     duration_ms = await probe_duration_ms(path)
-    silences = await detect_silences(path)
+    silences = await detect_silences(path, duration_ms=duration_ms)
     transcript = await _latest_transcript(db, session_id)
     computed = compute_speech_metrics(
         file_duration_ms=duration_ms,
@@ -759,6 +774,7 @@ async def _store_speech_metrics(db: AsyncSession, session_id: int, run_id: int, 
         filled_pause_tokens=settings.filled_pause_token_set,
     )
     computed.pop("silent_pause_durations_ms")
+    log_metrics = computed.pop("log_metrics", {})
     db.add(
         SessionSpeechMetrics(
             session_id=session_id,
@@ -770,6 +786,7 @@ async def _store_speech_metrics(db: AsyncSession, session_id: int, run_id: int, 
                 "ffmpeg": settings.FFMPEG_BIN,
                 "ffprobe": settings.FFPROBE_BIN,
                 "filled_pause_tokens": sorted(settings.filled_pause_token_set),
+                "log_metrics": {k: float(v) if v is not None else None for k, v in log_metrics.items()},
             },
             **computed,
         )
@@ -827,6 +844,53 @@ async def _store_iu_suggestions(db: AsyncSession, session: Session, run: Session
         )
 
 
+async def _get_participant_baseline_recall(
+    db: AsyncSession, participant_id: int, current_session_id: int
+) -> float | None:
+    baseline_session = (
+        await db.execute(
+            select(Session)
+            .where(
+                Session.participant_id == participant_id,
+                Session.status == SESSION_COMPLETED,
+                Session.id != current_session_id,
+            )
+            .order_by(Session.completed_at.asc(), Session.id.asc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if baseline_session is None:
+        return None
+    assessment = (
+        await db.execute(
+            select(SessionAssessment).where(
+                SessionAssessment.session_id == baseline_session.id,
+                SessionAssessment.status == "final",
+            )
+        )
+    ).scalar_one_or_none()
+    if assessment is None or assessment.iu_recall_percent is None:
+        return None
+    return float(assessment.iu_recall_percent)
+
+async def _get_survivor_profile_dict(db: AsyncSession, caregiver_id: int) -> dict | None:
+    profile = (
+        await db.execute(
+            select(SurvivorProfiles).where(SurvivorProfiles.user_id == caregiver_id)
+        )
+    ).scalar_one_or_none()
+    if profile is None:
+        return None
+    return {
+        "name": profile.name,
+        "primary_language": profile.primary_language,
+        "preferred_topics": profile.preferred_topics or [],
+        "instruction_preference": profile.instruction_preference,
+        "preferred_session_duration": profile.preferred_session_duration,
+        "practice_mode": profile.practice_mode,
+    }
+
+
 async def _execute_run(run_id: int, session_id: int, data: AnalysisRunIn) -> None:
     async with AsyncSessionLocal() as db:
         steps: list[str] = []
@@ -861,6 +925,7 @@ async def _execute_run(run_id: int, session_id: int, data: AnalysisRunIn) -> Non
                         created_by=run.created_by,
                     )
                 )
+                await db.flush()
 
             if data.run_speech_metrics:
                 steps.append("speech_metrics")
@@ -869,6 +934,70 @@ async def _execute_run(run_id: int, session_id: int, data: AnalysisRunIn) -> Non
             if data.run_iu_suggestions:
                 steps.append("iu_suggestions")
                 await _store_iu_suggestions(db, session, run)
+
+            # If speech metrics were produced, build & store evidence-based guidance in metrics.params
+            metrics = (
+                await db.execute(
+                    select(SessionSpeechMetrics)
+                    .where(SessionSpeechMetrics.run_id == run.id)
+                    .order_by(SessionSpeechMetrics.created_at.desc(), SessionSpeechMetrics.id.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if metrics is not None:
+                suggestions = list(
+                    (
+                        await db.execute(
+                            select(SessionIuSuggestion, StoryInformationUnit)
+                            .join(StoryInformationUnit, StoryInformationUnit.id == SessionIuSuggestion.iu_id)
+                            .where(SessionIuSuggestion.run_id == run.id)
+                        )
+                    ).all()
+                )
+                iu_results = [
+                    {"code": iu.code, "suggested_status": sugg.suggested_status}
+                    for sugg, iu in suggestions
+                ]
+                baseline_recall = await _get_participant_baseline_recall(db, session.participant_id, session.id)
+                trend_deltas = None
+                if baseline_recall is not None and iu_results:
+                    met_count = sum(1 for u in iu_results if u["suggested_status"] == "met")
+                    total_iu = len(iu_results)
+                    curr_recall = (met_count / total_iu * 100) if total_iu > 0 else None
+                    if curr_recall is not None:
+                        trend_deltas = {"iu_recall_percent": round(curr_recall - baseline_recall, 2)}
+
+                survivor_profile_dict = await _get_survivor_profile_dict(db, session.caregiver_id)
+                guidance = ai_service.build_actionable_guidance(
+                    speech_metrics={
+                        "speech_rate": float(metrics.speech_rate) if metrics.speech_rate is not None else None,
+                        "articulation_rate": float(metrics.articulation_rate) if metrics.articulation_rate is not None else None,
+                        "pause_rate_per_100_words": float(metrics.pause_rate_per_100_words) if metrics.pause_rate_per_100_words is not None else None,
+                        "silent_pause_total_ms": metrics.silent_pause_total_ms,
+                        "silent_pause_count": metrics.silent_pause_count,
+                    },
+                    iu_results=iu_results,
+                    trend_deltas=trend_deltas,
+                    survivor_profile=survivor_profile_dict,
+                )
+                params = dict(metrics.params or {})
+                params["actionable_guidance"] = guidance
+                metrics.params = params
+
+                db.add(
+                    SessionTrainingRecommendation(
+                        session_id=session.id,
+                        run_id=run.id,
+                        participant_id=session.participant_id,
+                        urgency_level=guidance.get("urgency_level", "routine"),
+                        primary_mode=guidance.get("primary_mode", "cst"),
+                        secondary_mode=guidance.get("secondary_mode"),
+                        target_goal=guidance.get("target_goal", ""),
+                        overall_interpretation=guidance.get("overall_interpretation", ""),
+                        medical_alert=guidance.get("medical_alert"),
+                        home_trainings=guidance.get("home_trainings", []),
+                    )
+                )
 
             run.status = "completed"
             run.finished_at = _now()
@@ -885,7 +1014,7 @@ async def _execute_run(run_id: int, session_id: int, data: AnalysisRunIn) -> Non
             await db.commit()
         except Exception as exc:  # noqa: BLE001 — recorded, never raised
             code = _error_code_for(exc)
-            logger.error("analysis run %s failed: %s", run_id, code)
+            logger.exception("analysis run %s failed (%s): %s", run_id, code, exc)
             # Single-transaction run: this discards every uncommitted row,
             # so a failed run leaves no partial artifacts behind.
             await db.rollback()
@@ -896,7 +1025,7 @@ async def _execute_run(run_id: int, session_id: int, data: AnalysisRunIn) -> Non
                 return
             failed.status = "failed"
             failed.error_code = code
-            failed.error_message = str(exc)[:500]
+            failed.error_message = (str(exc).strip() or type(exc).__name__)[:500]
             failed.finished_at = _now()
             await db.commit()
 
@@ -934,6 +1063,14 @@ async def _load_analysis_read(db: AsyncSession, run: SessionAnalysisRun) -> Anal
 
     speech: SpeechMetricsRead | None = None
     if metrics is not None:
+        pause_durations = [p.duration_ms for p in pauses]
+        log_metrics = (metrics.params or {}).get("log_metrics") if metrics.params else None
+        if not log_metrics and pause_durations:
+            computed_logs = compute_log_pause_metrics(pause_durations)
+            log_metrics = {k: float(v) if v is not None else None for k, v in computed_logs.items()}
+        elif not log_metrics:
+            log_metrics = {}
+
         speech = SpeechMetricsRead(
             run_id=metrics.run_id,
             session_id=metrics.session_id,
@@ -948,6 +1085,10 @@ async def _load_analysis_read(db: AsyncSession, run: SessionAnalysisRun) -> Anal
             silent_pause_mean_ms=metrics.silent_pause_mean_ms,
             silent_pause_median_ms=metrics.silent_pause_median_ms,
             silent_pause_sd_ms=metrics.silent_pause_sd_ms,
+            silent_pause_mean_log=log_metrics.get("mean"),
+            silent_pause_median_log=log_metrics.get("median"),
+            silent_pause_sd_log=log_metrics.get("sd"),
+            silent_pause_total_log=log_metrics.get("total"),
             speech_rate=metrics.speech_rate,
             articulation_rate=metrics.articulation_rate,
             speech_rate_wpm=metrics.speech_rate_wpm,
@@ -959,13 +1100,110 @@ async def _load_analysis_read(db: AsyncSession, run: SessionAnalysisRun) -> Anal
             quality_flag=metrics.quality_flag,
             silent_pauses=[
                 SilentPauseRead(
-                    ordinal=p.ordinal, start_ms=p.start_ms, end_ms=p.end_ms, duration_ms=p.duration_ms
+                    ordinal=p.ordinal,
+                    start_ms=p.start_ms,
+                    end_ms=p.end_ms,
+                    duration_ms=p.duration_ms,
+                    duration_log=round(math.log(p.duration_ms), 2) if p.duration_ms > 0 else None,
                 )
                 for p in pauses
             ],
-            silent_pause_durations_ms=[p.duration_ms for p in pauses],
+            silent_pause_durations_ms=pause_durations,
             created_at=metrics.created_at,
         )
+
+    actionable_guidance: ActionableGuidanceRead | None = None
+    rec = (
+        await db.execute(
+            select(SessionTrainingRecommendation)
+            .where(SessionTrainingRecommendation.run_id == run.id)
+            .order_by(SessionTrainingRecommendation.id.desc())
+        )
+    ).scalars().first()
+
+    if rec is not None:
+        actionable_guidance = ActionableGuidanceRead(
+            urgency_level=rec.urgency_level,
+            medical_alert=rec.medical_alert,
+            primary_mode=rec.primary_mode,
+            secondary_mode=rec.secondary_mode,
+            target_goal=rec.target_goal,
+            overall_interpretation=rec.overall_interpretation,
+            home_trainings=rec.home_trainings or [],
+        )
+    elif metrics is not None:
+        guidance_dict = (metrics.params or {}).get("actionable_guidance")
+        if guidance_dict is not None:
+            actionable_guidance = ActionableGuidanceRead.model_validate(guidance_dict)
+        else:
+            session = await _get_session(db, run.session_id)
+            baseline_recall = (
+                await _get_participant_baseline_recall(db, session.participant_id, session.id)
+                if session is not None
+                else None
+            )
+            iu_results = [
+                {"code": iu.code, "suggested_status": sugg.suggested_status}
+                for sugg, iu in suggestion_rows
+            ]
+            trend_deltas = None
+            if baseline_recall is not None and iu_results:
+                met_count = sum(1 for u in iu_results if u["suggested_status"] == "met")
+                total_iu = len(iu_results)
+                curr_recall = (met_count / total_iu * 100) if total_iu > 0 else None
+                if curr_recall is not None:
+                    trend_deltas = {"iu_recall_percent": round(curr_recall - baseline_recall, 2)}
+
+            survivor_profile_dict = (
+                await _get_survivor_profile_dict(db, session.caregiver_id)
+                if session is not None
+                else None
+            )
+            computed_guidance = ai_service.build_actionable_guidance(
+                speech_metrics={
+                    "speech_rate": float(metrics.speech_rate) if metrics.speech_rate is not None else None,
+                    "articulation_rate": float(metrics.articulation_rate) if metrics.articulation_rate is not None else None,
+                    "pause_rate_per_100_words": float(metrics.pause_rate_per_100_words) if metrics.pause_rate_per_100_words is not None else None,
+                    "silent_pause_total_ms": metrics.silent_pause_total_ms,
+                    "silent_pause_count": metrics.silent_pause_count,
+                },
+                iu_results=iu_results,
+                trend_deltas=trend_deltas,
+                survivor_profile=survivor_profile_dict,
+            )
+            actionable_guidance = ActionableGuidanceRead.model_validate(computed_guidance)
+            if session is not None:
+                new_rec = SessionTrainingRecommendation(
+                    session_id=session.id,
+                    run_id=run.id,
+                    participant_id=session.participant_id,
+                    urgency_level=computed_guidance.get("urgency_level", "routine"),
+                    primary_mode=computed_guidance.get("primary_mode", "cst"),
+                    secondary_mode=computed_guidance.get("secondary_mode"),
+                    target_goal=computed_guidance.get("target_goal", ""),
+                    overall_interpretation=computed_guidance.get("overall_interpretation", ""),
+                    medical_alert=computed_guidance.get("medical_alert"),
+                    home_trainings=computed_guidance.get("home_trainings", []),
+                )
+                db.add(new_rec)
+                params = dict(metrics.params or {})
+                params["actionable_guidance"] = computed_guidance
+                metrics.params = params
+                await db.commit()
+
+    training_log_rows = list(
+        (
+            await db.execute(
+                select(SessionTrainingLog)
+                .where(SessionTrainingLog.session_id == run.session_id)
+                .order_by(SessionTrainingLog.logged_at.desc(), SessionTrainingLog.id.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    training_logs = [TrainingLogRead.model_validate(row) for row in training_log_rows]
+
     return AnalysisRead(
         run_id=run.id,
         session_id=run.session_id,
@@ -986,6 +1224,8 @@ async def _load_analysis_read(db: AsyncSession, run: SessionAnalysisRun) -> Anal
             )
             for suggestion, iu in suggestion_rows
         ],
+        actionable_guidance=actionable_guidance,
+        training_logs=training_logs,
         started_at=run.started_at,
         finished_at=run.finished_at,
     )
@@ -1076,3 +1316,126 @@ async def get_analysis(
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No analysis for this session")
     return await _load_analysis_read(db, run)
+
+
+@router.post(
+    "/sessions/{session_id}/training-logs",
+    response_model=TrainingLogRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_training_log(
+    session_id: int,
+    data: TrainingLogCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: Users = Depends(get_current_user),
+) -> TrainingLogRead:
+    session = await _require_session(db, session_id, current_user)
+    _check_session_access(session, current_user)
+
+    log = SessionTrainingLog(
+        session_id=session.id,
+        participant_id=session.participant_id,
+        caregiver_id=current_user.id,
+        training_mode=data.training_mode.strip().lower(),
+        title=data.title.strip(),
+        status=data.status.strip().lower(),
+        duration_minutes=data.duration_minutes,
+        notes=data.notes.strip() if data.notes else None,
+        logged_at=_now(),
+    )
+    db.add(log)
+    await db.flush()
+
+    db.add(
+        AuditLog(
+            actor_user_id=current_user.id,
+            action="session.training_log.create",
+            entity_type="session",
+            entity_id=str(session.id),
+            meta={"log_id": log.id, "training_mode": log.training_mode, "status": log.status},
+        )
+    )
+    await db.commit()
+    await db.refresh(log)
+    return TrainingLogRead.model_validate(log)
+
+
+@router.get(
+    "/sessions/{session_id}/training-logs",
+    response_model=list[TrainingLogRead],
+)
+async def get_training_logs(
+    session_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: Users = Depends(get_current_user),
+) -> list[TrainingLogRead]:
+    session = await _require_session(db, session_id, current_user)
+    _check_session_access(session, current_user)
+
+    logs = list(
+        (
+            await db.execute(
+                select(SessionTrainingLog)
+                .where(SessionTrainingLog.session_id == session.id)
+                .order_by(SessionTrainingLog.logged_at.desc(), SessionTrainingLog.id.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [TrainingLogRead.model_validate(log) for log in logs]
+
+
+@router.get(
+    "/sessions/{session_id}/recommendation",
+    response_model=SessionTrainingRecommendationRead,
+)
+async def get_session_recommendation(
+    session_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: Users = Depends(get_current_user),
+) -> SessionTrainingRecommendation:
+    session = await _require_session(db, session_id, current_user)
+    _check_session_access(session, current_user)
+
+    rec = (
+        await db.execute(
+            select(SessionTrainingRecommendation)
+            .where(SessionTrainingRecommendation.session_id == session.id)
+            .order_by(SessionTrainingRecommendation.id.desc())
+        )
+    ).scalars().first()
+
+    if rec is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No training recommendation found for this session",
+        )
+    return rec
+
+
+@router.get(
+    "/sessions/{session_id}/recommendations",
+    response_model=list[SessionTrainingRecommendationRead],
+)
+async def list_session_recommendations(
+    session_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: Users = Depends(get_current_user),
+) -> list[SessionTrainingRecommendation]:
+    session = await _require_session(db, session_id, current_user)
+    _check_session_access(session, current_user)
+
+    recs = list(
+        (
+            await db.execute(
+                select(SessionTrainingRecommendation)
+                .where(SessionTrainingRecommendation.session_id == session.id)
+                .order_by(SessionTrainingRecommendation.id.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return recs
+

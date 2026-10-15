@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     # 25 MB as configurable initial limit.
     MAX_UPLOAD_BYTES: int = 25 * 1024 * 1024
     # Allowed audio MIME types.
-    ALLOWED_AUDIO_MIME: str = "audio/webm,audio/mp4,audio/mpeg,audio/wav,audio/x-wav,audio/ogg"
+    ALLOWED_AUDIO_MIME: str = "audio/webm,audio/mp4,audio/m4a,audio/x-m4a,audio/mpeg,audio/wav,audio/x-wav,audio/ogg"
 
     @property
     def allowed_audio_mime_set(self) -> set[str]:
@@ -85,7 +85,10 @@ class Settings(BaseSettings):
     PAUSE_MIN_MS: int = 100
     # Tokens removed from the transcript before counting words (CSAP: filled
     # pauses are annotated only to be removed).
-    FILLED_PAUSE_TOKENS: str = "eee,ee,eeh,ehm,em,hmm,hm,mmm,mm,eh,ah,oh,uh,uhm"
+    FILLED_PAUSE_TOKENS: str = (
+        "eee,ee,eeh,ehm,em,hmm,hm,mmm,mm,eh,ah,oh,uh,uhm,"
+        "anu,nganu,apaan,apaya,eum,euum,yah"
+    )
 
     @property
     def filled_pause_token_set(self) -> set[str]:

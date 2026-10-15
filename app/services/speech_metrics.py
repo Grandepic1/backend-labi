@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 import statistics
 from decimal import ROUND_HALF_UP, Decimal
@@ -72,6 +73,21 @@ def internal_pauses(file_duration_ms: int, silences: list[tuple[int, int]]) -> l
     has_lead = bool(silences) and silences[0][0] <= EDGE_TOLERANCE_MS
     has_tail = bool(silences) and silences[-1][1] >= file_duration_ms - EDGE_TOLERANCE_MS
     return [(int(s), int(e)) for s, e in silences[1 if has_lead else 0 : len(silences) - 1 if has_tail else len(silences)]]
+
+
+def compute_log_pause_metrics(durations_ms: list[int]) -> dict[str, Decimal | None]:
+    """Computes log-normal distribution metrics (ln) for silent pauses per CSAP protocol (Angelopoulou et al., 2024)."""
+    positives = [d for d in durations_ms if d > 0]
+    if not positives:
+        return {"mean": None, "median": None, "sd": None, "total": None}
+    log_vals = [math.log(d) for d in positives]
+    total_ms = sum(positives)
+    return {
+        "mean": _quantize(statistics.fmean(log_vals)),
+        "median": _quantize(statistics.median(log_vals)),
+        "sd": _quantize(statistics.stdev(log_vals)) if len(log_vals) > 1 else None,
+        "total": _quantize(math.log(total_ms)) if total_ms > 0 else None,
+    }
 
 
 def compute_speech_metrics(
@@ -153,4 +169,5 @@ def compute_speech_metrics(
         "filled_pause_count": filled_pause_count,
         "quality_flag": quality_flag,
         "silent_pause_durations_ms": durations,
+        "log_metrics": compute_log_pause_metrics(durations),
     }

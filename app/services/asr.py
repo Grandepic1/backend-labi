@@ -2,7 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import sys
 from pathlib import Path
+
+# On Windows, ensure nvidia runtime DLLs (cublas, cudnn) are discoverable by ctranslate2
+if sys.platform == "win32":
+    for _sub in ("cublas", "cudnn", "cuda_nvrtc"):
+        _bin_dir = Path(sys.prefix) / "Lib" / "site-packages" / "nvidia" / _sub / "bin"
+        if _bin_dir.is_dir():
+            try:
+                os.add_dll_directory(str(_bin_dir))
+            except Exception:
+                pass
+            os.environ["PATH"] = str(_bin_dir) + os.pathsep + os.environ.get("PATH", "")
 
 from faster_whisper import WhisperModel
 

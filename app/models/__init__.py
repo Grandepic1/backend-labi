@@ -13,6 +13,8 @@ from app.models.labi_session import (
     Session,
     SessionAssessment,
     SessionAssessmentItem,
+    SessionTrainingLog,
+    SessionTrainingRecommendation,
     Transcript,
 )
 from app.models.participant import Participant
@@ -32,6 +34,8 @@ __all__ = [
     "SessionIuSuggestion",
     "SessionSilentPause",
     "SessionSpeechMetrics",
+    "SessionTrainingLog",
+    "SessionTrainingRecommendation",
     "Story",
     "StoryInformationUnit",
     "StoryVersion",
