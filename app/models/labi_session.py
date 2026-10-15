@@ -1,6 +1,18 @@
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
@@ -66,6 +78,23 @@ class Transcript(Base):
     source: Mapped[str] = mapped_column(String(20), nullable=False, default="manual", server_default="manual")
     # draft | reviewed
     review_status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft", server_default="draft")
+    # ASR provenance. `language` is the language *identified* in the audio, not
+    # the forced transcription language, so a mismatch against ASR_LANGUAGE is
+    # visible instead of silent. `segments` holds the word-level timeline that
+    # a silent pause has to be aligned against (CSAP items 11-19).
+    language: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    language_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # NOTE: no server_default — MySQL forbids defaults on JSON columns.
+    segments: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Which model produced this text. Without it, a dataset rebuilt on a heavier
+    # model cannot be told apart from the old one, and metrics computed across
+    # mixed-model transcripts are not comparable: the text itself changes
+    # (word_timestamps already altered session 26 deterministically), which
+    # moves every syllable/word count and every pause alignment derived from it.
+    # NULL means the row predates this column or came from a manual transcript.
+    asr_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    asr_compute_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    asr_device: Mapped[str | None] = mapped_column(String(20), nullable=True)
     created_by: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[DateTime] = mapped_column(

@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 import httpx
 
 from app.core.config import settings
+
+logger = logging.getLogger("app.analysis")
 
 IU_STATUS_VALUES = ("met", "not_met", "unclear")
 _MAX_FIELD_CHARS = 2000
@@ -45,9 +48,17 @@ Aturan:
   daftar hanya boleh diterima bila maknanya setara persis (mis. "putrinya" untuk "anak perempuan");
   bila ragu, pilih "unclear".
 - Jangan menilai informasi di luar daftar IU. Jangan memberi diagnosis atau opini medis.
-- evidence_quote harus kutipan SESINGKAT mungkin yang secara spesifik mendukung IU tersebut
-  (satu frasa pendukung maksimal 120 karakter, bukan potongan transkrip umum). Kutipan generik
-  yang sama untuk banyak IU dianggap tidak valid.
+- evidence_quote harus SALINAN PERSIS dari transkrip: satu potongan bersambung, karakter per
+  karakter, persis seperti tertulis. Ambil potongan TERPENDEK yang cukup mendukung IU
+  (maksimal 120 karakter).
+  DILARANG: memparafrase, mengubah urutan kata, memperbaiki ejaan atau tata bahasa, menambah
+  kata, mengurangi kata, atau menggabungkan kata dari dua tempat berbeda dalam transkrip.
+  Kutipan yang tidak ditemukan persis di transkrip akan DITOLAK oleh sistem, dan IU tersebut
+  otomatis diturunkan menjadi "unclear" meskipun penilaian Anda benar. Karena itu salin apa
+  adanya, termasuk bila kalimatnya terasa salah atau tidak baku.
+  Contoh SALAH: transkrip berbunyi "jadinya berteduh, halus sampai di rumah", lalu dikutip
+  "berteduh, jadinya berteduh" -> urutan kata diubah, DITOLAK.
+  Contoh BENAR: kutipan "jadinya berteduh" -> ada persis di transkrip, DITERIMA.
 - Untuk "not_met": evidence_quote wajib null, dan rationale menjelaskan informasi apa yang
   tidak ditemukan dalam transkrip.
 - Untuk "unclear": evidence_quote boleh null, atau frasa ambigu yang dikutip persis.
@@ -97,11 +108,20 @@ def _quote_verified(transcript: str, quote: str | None) -> bool:
     return _normalize(quote) in _normalize(transcript)
 
 
-def _validate(payload: dict, codes: list[str], transcript: str) -> list[dict]:
+def _parse_and_validate(payload: dict, codes: list[str], transcript: str) -> tuple[list[dict], list[str]]:
+    """Validate structure, and report which quotes could not be verified.
+
+    The unverifiable quotes are returned rather than downgraded here: the caller
+    gets one chance to ask the model to copy the span correctly first, which is
+    the actual failure mode. Measured on sessions 26-28, every single
+    AI/human disagreement was a "met" whose quote had been paraphrased, not a
+    wrong judgement.
+    """
     items = payload.get("items")
     if not isinstance(items, list):
         raise AiInvalidOutput("field 'items' tidak ada atau bukan list")
     seen: dict[str, dict] = {}
+    unverified: list[str] = []
     for entry in items:
         if not isinstance(entry, dict):
             raise AiInvalidOutput("elemen 'items' bukan objek")
@@ -119,9 +139,7 @@ def _validate(payload: dict, codes: list[str], transcript: str) -> list[dict]:
         if status == "not_met":
             quote = None
         elif status == "met" and not _quote_verified(transcript, quote):
-            status = "unclear"
-            note = "kutipan tidak terverifikasi sebagai potongan persis transkrip"
-            rationale = f"{rationale} [{note}]" if rationale else f"[{note}]"
+            unverified.append(code)
         seen[code] = {
             "code": code,
             "status": status,
@@ -131,7 +149,41 @@ def _validate(payload: dict, codes: list[str], transcript: str) -> list[dict]:
     missing = [c for c in codes if c not in seen]
     if missing:
         raise AiInvalidOutput(f"IU belum dinilai: {', '.join(missing)}")
-    return list(seen.values())
+    return list(seen.values()), unverified
+
+
+def _downgrade_unverified(items: list[dict], unverified: list[str]) -> list[dict]:
+    """An unverifiable quote can only ever downgrade met -> unclear.
+
+    Never the reverse: the quote is what makes the decision auditable, so a
+    decision that cannot be cited is not allowed to stand as "met".
+    """
+    flagged = set(unverified)
+    note = "kutipan tidak terverifikasi sebagai potongan persis transkrip"
+    out: list[dict] = []
+    for item in items:
+        if item["code"] in flagged:
+            rationale = item["rationale"]
+            out.append(
+                {
+                    **item,
+                    "status": "unclear",
+                    "rationale": f"{rationale} [{note}]" if rationale else f"[{note}]",
+                }
+            )
+        else:
+            out.append(item)
+    return out
+
+
+def _quote_repair_message(unverified: list[str]) -> str:
+    return (
+        f"evidence_quote untuk {', '.join(unverified)} tidak ditemukan sebagai potongan persis "
+        "di transkrip. Salin ulang HANYA potongan yang benar-benar ada di transkrip, karakter "
+        "per karakter, tanpa mengubah urutan kata, tanpa memperbaiki ejaan, dan tanpa "
+        "menggabungkan kata dari tempat berbeda. Jangan memparafrase. "
+        "Balas ulang SELURUH item dalam format JSON yang sama."
+    )
 
 
 def _clean_text(value: object) -> str | None:
@@ -182,7 +234,7 @@ async def suggest_iu_statuses(*, story_text: str, ius: list[dict], transcript: s
     async with httpx.AsyncClient(timeout=settings.AI_TIMEOUT_SECONDS) as client:
         content = await _complete(client, messages)
         try:
-            return _validate(_parse_json_object(content), codes, transcript)
+            items, unverified = _parse_and_validate(_parse_json_object(content), codes, transcript)
         except AiInvalidOutput as first_error:
             messages.append({"role": "assistant", "content": content})
             messages.append(
@@ -193,4 +245,40 @@ async def suggest_iu_statuses(*, story_text: str, ius: list[dict], transcript: s
             )
             retry_content = await _complete(client, messages)
             # A second failure propagates as AiInvalidOutput.
-            return _validate(_parse_json_object(retry_content), codes, transcript)
+            items, unverified = _parse_and_validate(
+                _parse_json_object(retry_content), codes, transcript
+            )
+
+        # The model paraphrases instead of copying, which is the whole reason a
+        # correct "met" ends up downgraded. One explicit, cheap correction is
+        # worth it: it costs a single extra completion and is the difference
+        # between the AI agreeing with the assessor and abstaining.
+        if unverified:
+            messages.append({"role": "assistant", "content": content})
+            messages.append({"role": "user", "content": _quote_repair_message(unverified)})
+            try:
+                repaired = await _complete(client, messages)
+                repaired_items, _ = _parse_and_validate(
+                    _parse_json_object(repaired), codes, transcript
+                )
+            except AiInvalidOutput as exc:
+                # Keep the first answer rather than lose the run over the repair.
+                logger.warning("perbaikan kutipan gagal: %s", exc)
+            else:
+                # Only the flagged items may change. Measured on session 26, a
+                # repair round allowed to rewrite everything also flipped two
+                # items whose quotes had been fine, so the repair is scoped to
+                # exactly what it was asked to fix.
+                repaired_by_code = {item["code"]: item for item in repaired_items}
+                flagged = set(unverified)
+                items = [
+                    repaired_by_code.get(item["code"], item) if item["code"] in flagged else item
+                    for item in items
+                ]
+                unverified = [
+                    item["code"]
+                    for item in items
+                    if item["status"] == "met" and not _quote_verified(transcript, item["evidence_quote"])
+                ]
+
+    return _downgrade_unverified(items, unverified)

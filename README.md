@@ -75,12 +75,39 @@ Flow, continuing after the recording upload:
 
 The `run_transcription` step appends a `transcripts` row with `source="asr"`
 (never overwrites), which `GET .../transcript` then returns. Metrics are CSAP
-table 2 items 1-10 derived from the audio — silent-pause count/total/mean/median/sd,
-speech rate, articulation rate, pause rate per 100 words — plus the
-syllable/word/filled-pause counts they rest on; items 11-19 need
-syntactic/prosodic annotation and are deliberately not computed. Every detected
-pause is stored raw (`start_ms`/`end_ms`) and the raw transcript is kept, so
-thresholds and counts can be re-derived without re-running ffmpeg or ASR.
+table 2 items 1-10 derived from the audio — total speech duration, total
+phonation, silent-pause total/mean/median/sd, speech rate, articulation rate,
+pause frequency per 100 words — plus the syllable/word/filled-pause counts they
+rest on. Item 2 (phonation) subtracts the measured filled-pause time as well as
+the silent pauses; that time comes from the ASR word timeline, so it is `NULL`
+for any transcript without one, and `params["filled_pause_timed"]` records which
+of the two cases a row is in. Items 11-19 need syntactic annotation (clause-like
+units, open-class words, nouns, verbs) and are deliberately not computed: every
+input they need — transcript text, word timeline, silent-pause positions — is
+already stored, so they can be derived later without re-running ffmpeg or ASR.
+Every detected pause is stored raw (`start_ms`/`end_ms`) and the raw transcript
+is kept, so thresholds and counts can be re-derived without re-running anything.
+
+### Rebuilding the dataset after an ASR model change
+
+Changing the model changes the transcript text itself — turning on
+`word_timestamps` alone altered session 26 deterministically (`halus` →
+`haluh`, `"jah, sorry"` → `"jatuh sore"`) — which moves every syllable and word
+count derived from it. A dataset must therefore not mix two models. Each
+`transcripts` row records the model that produced it (`asr_model`,
+`asr_compute_type`, `asr_device`), which is what keeps the old and new datasets
+separable.
+
+```powershell
+uv run python scripts/rebuild_analysis.py --dry-run          # rencana saja
+uv run python scripts/rebuild_analysis.py                    # semua sesi, lewati yang sudah pakai model aktif
+uv run python scripts/rebuild_analysis.py --sessions 26,27,28 --force
+uv run python scripts/rebuild_analysis.py --no-iu            # tanpa panggilan LLM
+```
+
+Transcripts are append-only, so a rebuild never destroys the previous run; the
+new rows are distinguished by `asr_model`. Filter on that column before any
+analysis. `scripts/agreement_study.py` reports AI-vs-human IU agreement.
 
 `.env` keys: `FFMPEG_BIN`, `FFPROBE_BIN`, `FFMPEG_TIMEOUT_SECONDS`,
 `PAUSE_NOISE_DB`, `PAUSE_MIN_MS`, `FILLED_PAUSE_TOKENS`, `AI_BASE_URL`,

@@ -18,6 +18,7 @@ class AudioToolFailed(RuntimeError):
 
 _SILENCE_START_RE = re.compile(r"silence_start:\s*(-?[\d.]+)")
 _SILENCE_END_RE = re.compile(r"silence_end:\s*(-?[\d.]+)")
+_MAX_VOLUME_RE = re.compile(r"max_volume:\s*(-?[\d.]+) dB")
 
 
 def _run_blocking(argv: list[str]) -> tuple[int, bytes, bytes]:
@@ -71,7 +72,52 @@ async def probe_duration_ms(path: Path) -> int:
         raise AudioToolFailed("duration unavailable") from exc
 
 
-async def detect_silences(path: Path) -> list[tuple[int, int]]:
+async def measure_peak_db(path: Path) -> float | None:
+    """Peak sample level of the file, in dBFS."""
+    code, _, stderr = await _run(
+        [
+            settings.FFMPEG_BIN,
+            "-hide_banner",
+            "-nostdin",
+            "-i",
+            str(path),
+            "-af",
+            "volumedetect",
+            "-f",
+            "null",
+            "-",
+        ]
+    )
+    text = stderr.decode(errors="replace")
+    match = _MAX_VOLUME_RE.search(text)
+    if code != 0 or match is None:
+        return None
+    return float(match.group(1))
+
+
+async def resolve_noise_db(path: Path) -> float:
+    """The silencedetect floor to use for this file.
+
+    A single absolute floor cannot serve recordings that differ in headroom.
+    Measured on the real sessions, a fixed -30 dB reported 0 silent pauses for
+    session 26 and 41 for session 22 -- the same threshold, two contradictory
+    answers. Deriving the floor from the file's own peak keeps the detector
+    proportional to the recording instead of to the recorder.
+    """
+    if not settings.PAUSE_ADAPTIVE_NOISE:
+        return settings.PAUSE_NOISE_DB
+    peak = await measure_peak_db(path)
+    if peak is None:
+        return settings.PAUSE_NOISE_DB
+    return min(
+        settings.PAUSE_NOISE_MAX_DB,
+        max(settings.PAUSE_NOISE_MIN_DB, peak - settings.PAUSE_NOISE_MARGIN_DB),
+    )
+
+
+async def detect_silences(path: Path, noise_db: float | None = None) -> list[tuple[int, int]]:
+    if noise_db is None:
+        noise_db = await resolve_noise_db(path)
     code, _, stderr = await _run(
         [
             settings.FFMPEG_BIN,
@@ -84,7 +130,7 @@ async def detect_silences(path: Path) -> list[tuple[int, int]]:
             "-ar",
             "16000",
             "-af",
-            f"silencedetect=noise={settings.PAUSE_NOISE_DB}dB:d={settings.PAUSE_MIN_MS / 1000}",
+            f"silencedetect=noise={noise_db}dB:d={settings.PAUSE_MIN_MS / 1000}",
             "-f",
             "null",
             "-",

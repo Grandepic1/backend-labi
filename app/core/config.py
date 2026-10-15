@@ -77,12 +77,26 @@ class Settings(BaseSettings):
     FFPROBE_BIN: str = "ffprobe"
     # Hard cap around one media subprocess.
     FFMPEG_TIMEOUT_SECONDS: int = 120
-    # silencedetect noise floor in dB.
+    # silencedetect noise floor in dB. Only used when PAUSE_ADAPTIVE_NOISE is
+    # off, or as the fallback when the peak level cannot be measured.
     PAUSE_NOISE_DB: float = -30.0
+    # An absolute floor is an a-priori threshold, which CSAP §2.3 rules out, and
+    # it fails in practice: the recordings differ by ~6 dB of headroom, so a
+    # fixed -30 dB found 0 pauses in one session and 41 in another. The floor is
+    # therefore derived per file from its measured peak level.
+    PAUSE_ADAPTIVE_NOISE: bool = True
+    PAUSE_NOISE_MARGIN_DB: float = 18.0
+    # Clamp so a click or a silent file cannot move the floor somewhere absurd.
+    PAUSE_NOISE_MIN_DB: float = -45.0
+    PAUSE_NOISE_MAX_DB: float = -15.0
     # Technical detection floor only (silencedetect cannot go much lower):
     # every detected pause is stored, so the CSAP a-posteriori threshold
     # analysis stays possible on the raw rows.
-    PAUSE_MIN_MS: int = 100
+    # 100 ms was cutting into the observed distribution (the shortest pause kept
+    # for session 25 was 123 ms), and CSAP explicitly applies no a-priori
+    # threshold, so the floor is lowered to 50 ms. Anything dropped here is
+    # dropped before storage and cannot be recovered later.
+    PAUSE_MIN_MS: int = 50
     # Tokens removed from the transcript before counting words (CSAP: filled
     # pauses are annotated only to be removed).
     FILLED_PAUSE_TOKENS: str = "eee,ee,eeh,ehm,em,hmm,hm,mmm,mm,eh,ah,oh,uh,uhm"
@@ -112,6 +126,14 @@ class Settings(BaseSettings):
     ASR_LANGUAGE: str = "id"  # "" = auto-detect
     ASR_BEAM_SIZE: int = 5
     ASR_VAD_FILTER: bool = True
+    # Word-level timestamps. Needed to join a silent pause to the word that
+    # follows it (CSAP items 11-18); costs one extra alignment pass per run.
+    ASR_WORD_TIMESTAMPS: bool = True
+    # Run language identification alongside the forced-language transcription.
+    # Forcing ASR_LANGUAGE makes Whisper skip detection, so _info.language is
+    # always the forced value and carries no signal; a separate detection pass
+    # is the only way to notice a transcript that came out in another language.
+    ASR_DETECT_LANGUAGE: bool = True
     # Hard cap around one transcription.
     ASR_TIMEOUT_SECONDS: int = 1800
 

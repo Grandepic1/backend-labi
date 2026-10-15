@@ -53,27 +53,43 @@ class SessionSpeechMetrics(Base):
     file_duration_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
     lead_silence_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
     tail_silence_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # --- CSAP table 2, items 1-10 ---
+    # item 1 — total duration of speech (file minus recorder lead-in/lead-out).
     speech_duration_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # item 2 — total duration of phonation: speech minus silent *and* filled
+    # pauses. Filled-pause time can only be measured when the transcript carries
+    # a word timeline, so this falls back to silent-only when it does not; the
+    # effective coverage is recorded in `params["filled_pause_timed"]`.
     phonation_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # item 3 — total duration of silent pauses.
     silent_pause_total_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
     silent_pause_count: Mapped[int] = mapped_column(Integer, nullable=False)
 
+    # items 4 and 5.
     silent_pause_mean_ms: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
     silent_pause_median_ms: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
+    # Beyond table 2, but CSAP §2.3 names it explicitly as a computed variable.
     silent_pause_sd_ms: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
-    # CSAP item 8 / 9: syllables per minute over speech / phonation time.
+    # item 8 / 9 — syllables per minute over speech / phonation time.
     speech_rate: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
     articulation_rate: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
-    # Word-based variants of the same two rates.
+    # Word-based variants of the same two rates (not table 2; kept because the
+    # paper notes syllables are the more representative unit, so both are useful
+    # side by side when a reviewer asks).
     speech_rate_wpm: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
     articulation_rate_wpm: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
-    # CSAP item 10.
+    # item 10 — pause frequency, per 100 words.
     pause_rate_per_100_words: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
 
+    # item 6 / 7.
     syllable_count: Mapped[int] = mapped_column(Integer, nullable=False)
     word_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Filled pauses are annotated only to be removed (CSAP §2.3), but their
+    # duration is what separates item 2 from item 3, so both the count and the
+    # time are kept. NULL duration = no word timeline was available.
     filled_pause_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    # too_short | no_transcript | NULL
+    filled_pause_total_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # too_short | no_transcript | language_mismatch | NULL
     quality_flag: Mapped[str | None] = mapped_column(String(30), nullable=True)
     params: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

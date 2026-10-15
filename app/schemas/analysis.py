@@ -38,6 +38,10 @@ class SpeechMetricsRead(BaseModel):
     syllable_count: int
     word_count: int
     filled_pause_count: int
+    # CSAP table 2 item 2 rests on this. None = the transcript had no word
+    # timeline, so filled-pause time was not measurable and phonation_ms is a
+    # silent-only overestimate.
+    filled_pause_total_ms: int | None = None
     quality_flag: str | None = None
     silent_pauses: list[SilentPauseRead] = []
     silent_pause_durations_ms: list[int] = []

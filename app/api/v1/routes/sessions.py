@@ -1,4 +1,5 @@
 import logging
+from dataclasses import asdict
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -55,7 +56,13 @@ from app.schemas.session import (
 )
 from app.services import ai as ai_service
 from app.services import asr as asr_service
-from app.services.audio import AudioToolFailed, AudioToolMissing, detect_silences, probe_duration_ms
+from app.services.audio import (
+    AudioToolFailed,
+    AudioToolMissing,
+    detect_silences,
+    probe_duration_ms,
+    resolve_noise_db,
+)
 from app.services.scoring import (
     IU_STATUSES,
     SESSION_ASSESSMENT_IN_PROGRESS,
@@ -67,7 +74,12 @@ from app.services.scoring import (
     iu_recall_percent,
     summarize_statuses,
 )
-from app.services.speech_metrics import EDGE_TOLERANCE_MS, compute_speech_metrics, internal_pauses
+from app.services.speech_metrics import (
+    EDGE_TOLERANCE_MS,
+    compute_speech_metrics,
+    filled_pause_spans,
+    internal_pauses,
+)
 from app.services.storage import resolve_path, save_upload
 
 router = APIRouter(tags=["sessions"])
@@ -750,26 +762,66 @@ def _now() -> datetime:
 
 async def _store_speech_metrics(db: AsyncSession, session_id: int, run_id: int, path) -> None:
     duration_ms = await probe_duration_ms(path)
-    silences = await detect_silences(path)
+    noise_db = await resolve_noise_db(path)
+    silences = await detect_silences(path, noise_db)
     transcript = await _latest_transcript(db, session_id)
+    # None (no word timeline) and [] (a timeline with no filled pause) mean
+    # different things for CSAP item 2, so the distinction is preserved all the
+    # way into the stored row instead of being flattened to zero.
+    filled_spans = filled_pause_spans(
+        transcript.segments if transcript is not None else None,
+        settings.filled_pause_token_set,
+    )
     computed = compute_speech_metrics(
         file_duration_ms=duration_ms,
         silences=silences,
         transcript_text=transcript.text if transcript is not None else None,
         filled_pause_tokens=settings.filled_pause_token_set,
+        transcript_language=transcript.language if transcript is not None else None,
+        expected_language=settings.ASR_LANGUAGE or None,
+        filled_spans=filled_spans,
     )
     computed.pop("silent_pause_durations_ms")
+    filled_pause_timed_count = computed.pop("filled_pause_timed_count")
     db.add(
         SessionSpeechMetrics(
             session_id=session_id,
             run_id=run_id,
             params={
-                "noise_db": settings.PAUSE_NOISE_DB,
+                # The effective floor, not the configured one: with adaptive
+                # detection they differ per file, and the stored numbers are
+                # only reproducible against the floor that actually ran.
+                "noise_db": noise_db,
+                "noise_db_configured": settings.PAUSE_NOISE_DB,
+                "noise_adaptive": settings.PAUSE_ADAPTIVE_NOISE,
+                "noise_margin_db": settings.PAUSE_NOISE_MARGIN_DB,
                 "min_pause_ms": settings.PAUSE_MIN_MS,
                 "edge_tolerance_ms": EDGE_TOLERANCE_MS,
                 "ffmpeg": settings.FFMPEG_BIN,
                 "ffprobe": settings.FFPROBE_BIN,
                 "filled_pause_tokens": sorted(settings.filled_pause_token_set),
+                # Provenance for the language gate and the word timeline: both
+                # change what the numbers mean, so both belong on the row.
+                "expected_language": settings.ASR_LANGUAGE or None,
+                "transcript_language": transcript.language if transcript is not None else None,
+                "language_probability": (
+                    float(transcript.language_probability)
+                    if transcript is not None and transcript.language_probability is not None
+                    else None
+                ),
+                "word_timestamps": settings.ASR_WORD_TIMESTAMPS,
+                # The ASR model decides the text, and the text decides every
+                # count below. Recorded here as well as on the transcript so a
+                # metrics row is self-describing.
+                "asr_model": settings.ASR_MODEL,
+                "asr_compute_type": settings.ASR_COMPUTE_TYPE,
+                "asr_device": settings.ASR_DEVICE,
+                # CSAP item 2 coverage: how many filled pauses the timeline
+                # could actually place in time, against the count read off the
+                # text. `filled_pause_timed` is False when there was no timeline
+                # at all, in which case item 2 is a silent-only overestimate.
+                "filled_pause_timed": filled_pause_timed_count is not None,
+                "filled_pause_timed_count": filled_pause_timed_count,
             },
             **computed,
         )
@@ -849,16 +901,25 @@ async def _execute_run(run_id: int, session_id: int, data: AnalysisRunIn) -> Non
 
             if data.run_transcription:
                 steps.append("transcription")
-                text = await asr_service.transcribe(path)
+                asr = await asr_service.transcribe(path)
                 # Append-only: never overwrite a previous transcript.
                 db.add(
                     Transcript(
                         session_id=session.id,
                         recording_id=rec.id,
-                        text=text,
+                        text=asr.text,
                         source="asr",
                         review_status="draft",
                         created_by=run.created_by,
+                        language=asr.language,
+                        language_probability=asr.language_probability,
+                        segments=[asdict(segment) for segment in asr.segments],
+                        # Which model wrote this text. A later rebuild on a
+                        # heavier model appends a *new* row, so this is what
+                        # keeps the two datasets separable.
+                        asr_model=settings.ASR_MODEL,
+                        asr_compute_type=settings.ASR_COMPUTE_TYPE,
+                        asr_device=settings.ASR_DEVICE,
                     )
                 )
                 # The session disables autoflush, so the INSERT must be pushed
@@ -963,6 +1024,7 @@ async def _load_analysis_read(db: AsyncSession, run: SessionAnalysisRun) -> Anal
             syllable_count=metrics.syllable_count,
             word_count=metrics.word_count,
             filled_pause_count=metrics.filled_pause_count,
+            filled_pause_total_ms=metrics.filled_pause_total_ms,
             quality_flag=metrics.quality_flag,
             silent_pauses=[
                 SilentPauseRead(

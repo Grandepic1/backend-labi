@@ -48,6 +48,15 @@ class TranscriptRead(BaseModel):
     text: str
     source: str
     review_status: str
+    # ASR provenance, so a caller can tell which model produced the text and
+    # whether the audio language matched the forced transcription language.
+    # `segments` (the word timeline) is deliberately not exposed here: it is
+    # large, and only the metrics step needs it.
+    language: str | None = None
+    language_probability: float | None = None
+    asr_model: str | None = None
+    asr_compute_type: str | None = None
+    asr_device: str | None = None
     created_at: datetime
     updated_at: datetime
 
