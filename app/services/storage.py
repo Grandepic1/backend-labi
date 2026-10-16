@@ -17,14 +17,16 @@ _SIGNATURES: list[tuple[bytes, set[str]]] = [
     (b"\x1a\x45\xdf\xa3", {"audio/webm"}),  # EBML
     (b"\x00\x00\x00\x18ftypmp42", {"audio/mp4"}),
     (b"\x00\x00\x00 ftypmp42", {"audio/mp4"}),
-    (b"\x00\x00\x00\x1cftypM4A", {"audio/mp4"}),
-    (b"\x00\x00\x00 ftypM4A", {"audio/mp4"}),
+    (b"\x00\x00\x00\x1cftypM4A", {"audio/mp4", "audio/m4a", "audio/x-m4a"}),
+    (b"\x00\x00\x00 ftypM4A", {"audio/mp4", "audio/m4a", "audio/x-m4a"}),
     (b"fLaC", {"audio/x-flac", "audio/flac"}),
 ]
 
 _EXT_BY_MIME = {
     "audio/webm": ".webm",
     "audio/mp4": ".m4a",
+    "audio/m4a": ".m4a",
+    "audio/x-m4a": ".m4a",
     "audio/mpeg": ".mp3",
     "audio/wav": ".wav",
     "audio/x-wav": ".wav",

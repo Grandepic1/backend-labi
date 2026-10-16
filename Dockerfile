@@ -14,6 +14,13 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
+# ffmpeg provides ffprobe + the silencedetect filter used by the speech
+# metrics step. Whisper decodes through its own bundled PyAV, so this is
+# only for the audio measurements.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Manifests only — cached layer, rebuilt only when dependencies change.

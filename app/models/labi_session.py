@@ -39,7 +39,7 @@ class Recording(Base):
     __table_args__ = (UniqueConstraint("session_id", name="uq_recordings_session"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    session_id: Mapped[int] = mapped_column(Integer, ForeignKey("sessions.id"), nullable=False, index=True)
+    session_id: Mapped[int] = mapped_column(Integer, ForeignKey("sessions.id"), nullable=False)
     storage_provider: Mapped[str] = mapped_column(String(30), nullable=False, default="local_private", server_default="local_private")
     # Relative object key under STORAGE_DIR, never a public URL.
     # String(512) + UNIQUE: MySQL cannot build a UNIQUE index on TEXT.
@@ -78,7 +78,7 @@ class SessionAssessment(Base):
     __table_args__ = (UniqueConstraint("session_id", name="uq_assessments_session"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    session_id: Mapped[int] = mapped_column(Integer, ForeignKey("sessions.id"), nullable=False, index=True)
+    session_id: Mapped[int] = mapped_column(Integer, ForeignKey("sessions.id"), nullable=False)
     assessor_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     # draft | final
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft", server_default="draft")
@@ -96,10 +96,13 @@ class SessionAssessment(Base):
 
 class SessionAssessmentItem(Base):
     __tablename__ = "session_assessment_items"
-    __table_args__ = (UniqueConstraint("assessment_id", "iu_id", name="uq_assessment_iu"),)
+    __table_args__ = (
+        UniqueConstraint("assessment_id", "iu_id", name="uq_assessment_iu"),
+        Index("ix_assessment_items_assessment", "assessment_id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    assessment_id: Mapped[int] = mapped_column(Integer, ForeignKey("session_assessments.id"), nullable=False, index=True)
+    assessment_id: Mapped[int] = mapped_column(Integer, ForeignKey("session_assessments.id"), nullable=False)
     iu_id: Mapped[int] = mapped_column(Integer, ForeignKey("story_information_units.id"), nullable=False)
     # met | not_met | unclear
     status: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -109,11 +112,53 @@ class SessionAssessmentItem(Base):
 
 class AuditLog(Base):
     __tablename__ = "audit_logs"
+    __table_args__ = (
+        Index("ix_audit_actor", "actor_user_id"),
+        Index("ix_audit_action", "action"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    actor_user_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True, index=True)
-    action: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    actor_user_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
+    action: Mapped[str] = mapped_column(String(100), nullable=False)
     entity_type: Mapped[str] = mapped_column(String(100), nullable=False)
     entity_id: Mapped[str] = mapped_column(String(64), nullable=False)
     meta: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
     created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class SessionTrainingLog(Base):
+    __tablename__ = "session_training_logs"
+    __table_args__ = (
+        Index("ix_training_logs_session", "session_id"),
+        Index("ix_training_logs_participant", "participant_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(Integer, ForeignKey("sessions.id"), nullable=False, index=True)
+    participant_id: Mapped[int] = mapped_column(Integer, ForeignKey("participants.id"), nullable=False, index=True)
+    caregiver_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    training_mode: Mapped[str] = mapped_column(String(30), nullable=False)  # sfa | srt | cst
+    title: Mapped[str] = mapped_column(String(150), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="completed", server_default="completed")
+    duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    logged_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class SessionTrainingRecommendation(Base):
+    __tablename__ = "session_training_recommendations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(Integer, ForeignKey("sessions.id"), nullable=False, index=True)
+    run_id: Mapped[int] = mapped_column(Integer, ForeignKey("session_analysis_runs.id"), nullable=False, index=True)
+    participant_id: Mapped[int] = mapped_column(Integer, ForeignKey("participants.id"), nullable=False, index=True)
+    urgency_level: Mapped[str] = mapped_column(String(50), nullable=False)  # routine | moderate | high | medical_consultation_advised
+    primary_mode: Mapped[str] = mapped_column(String(30), nullable=False)  # sfa | srt | cst
+    secondary_mode: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    target_goal: Mapped[str] = mapped_column(Text, nullable=False)
+    overall_interpretation: Mapped[str] = mapped_column(Text, nullable=False)
+    medical_alert: Mapped[str | None] = mapped_column(Text, nullable=True)
+    home_trainings: Mapped[list[dict]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+

@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
@@ -9,7 +9,7 @@ class Story(Base):
     __tablename__ = "stories"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    slug: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    slug: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     # draft | published | archived
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft", server_default="draft", index=True)
     created_by: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
@@ -40,11 +40,14 @@ class StoryVersion(Base):
 
 class StoryInformationUnit(Base):
     __tablename__ = "story_information_units"
-    __table_args__ = (UniqueConstraint("story_version_id", "code", name="uq_version_iu_code"),)
+    __table_args__ = (
+        UniqueConstraint("story_version_id", "code", name="uq_version_iu_code"),
+        Index("ix_iu_version_id", "story_version_id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     story_version_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("story_versions.id"), nullable=False, index=True
+        Integer, ForeignKey("story_versions.id"), nullable=False
     )
     code: Mapped[str] = mapped_column(String(20), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)

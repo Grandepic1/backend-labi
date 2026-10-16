@@ -66,11 +66,57 @@ class Settings(BaseSettings):
     # 25 MB as configurable initial limit.
     MAX_UPLOAD_BYTES: int = 25 * 1024 * 1024
     # Allowed audio MIME types.
-    ALLOWED_AUDIO_MIME: str = "audio/webm,audio/mp4,audio/mpeg,audio/wav,audio/x-wav,audio/ogg"
+    ALLOWED_AUDIO_MIME: str = "audio/webm,audio/mp4,audio/m4a,audio/x-m4a,audio/mpeg,audio/wav,audio/x-wav,audio/ogg"
 
     @property
     def allowed_audio_mime_set(self) -> set[str]:
         return {m.strip().lower() for m in self.ALLOWED_AUDIO_MIME.split(",") if m.strip()}
+
+    # --- Labi analysis: audio measurement (ffmpeg/ffprobe) ---
+    FFMPEG_BIN: str = "ffmpeg"
+    FFPROBE_BIN: str = "ffprobe"
+    # Hard cap around one media subprocess.
+    FFMPEG_TIMEOUT_SECONDS: int = 120
+    # silencedetect noise floor in dB.
+    PAUSE_NOISE_DB: float = -30.0
+    # Technical detection floor only (silencedetect cannot go much lower):
+    # every detected pause is stored, so the CSAP a-posteriori threshold
+    # analysis stays possible on the raw rows.
+    PAUSE_MIN_MS: int = 100
+    # Tokens removed from the transcript before counting words (CSAP: filled
+    # pauses are annotated only to be removed).
+    FILLED_PAUSE_TOKENS: str = (
+        "eee,ee,eeh,ehm,em,hmm,hm,mmm,mm,eh,ah,oh,uh,uhm,"
+        "anu,nganu,apaan,apaya,eum,euum,yah"
+    )
+
+    @property
+    def filled_pause_token_set(self) -> set[str]:
+        return {t.strip().lower() for t in self.FILLED_PAUSE_TOKENS.split(",") if t.strip()}
+
+    # --- Labi analysis: local LLM (LM Studio OpenAI-compatible server) ---
+    AI_BASE_URL: str = "http://127.0.0.1:1234/v1"
+    # LM Studio ignores the value but requires a bearer header.
+    AI_API_KEY: str = "lm-studio"
+    # Model id from GET {AI_BASE_URL}/models; empty disables IU suggestions.
+    AI_MODEL: str = ""
+    # Local models are slow; this is the httpx timeout for one completion.
+    AI_TIMEOUT_SECONDS: int = 600
+
+    # --- Labi analysis: local ASR (faster-whisper, in-process) ---
+    ASR_MODEL: str = "large-v3"
+    # auto | cpu | cuda. Default is cpu: ctranslate2's "auto" selects CUDA
+    # whenever a driver is visible, then fails at decode time when the CUDA
+    # runtime (cuBLAS/cuDNN) is not installed. Set cuda + float16 explicitly
+    # on a machine with the full CUDA runtime.
+    ASR_DEVICE: str = "cpu"
+    ASR_COMPUTE_TYPE: str = "int8"  # int8 on CPU, float16 with cuda
+    ASR_MODEL_DIR: str = "./models"
+    ASR_LANGUAGE: str = "id"  # "" = auto-detect
+    ASR_BEAM_SIZE: int = 5
+    ASR_VAD_FILTER: bool = True
+    # Hard cap around one transcription.
+    ASR_TIMEOUT_SECONDS: int = 1800
 
     # MySQL connection parts (matches existing .env keys)
     DB_HOST: str = "127.0.0.1"

@@ -1,12 +1,20 @@
 """Register models here so Alembic autogenerate can see them."""
 
 from app.core.database import Base
+from app.models.labi_analysis import (
+    SessionAnalysisRun,
+    SessionIuSuggestion,
+    SessionSilentPause,
+    SessionSpeechMetrics,
+)
 from app.models.labi_session import (
     AuditLog,
     Recording,
     Session,
     SessionAssessment,
     SessionAssessmentItem,
+    SessionTrainingLog,
+    SessionTrainingRecommendation,
     Transcript,
 )
 from app.models.participant import Participant
@@ -20,8 +28,14 @@ __all__ = [
     "Participant",
     "Recording",
     "Session",
+    "SessionAnalysisRun",
     "SessionAssessment",
     "SessionAssessmentItem",
+    "SessionIuSuggestion",
+    "SessionSilentPause",
+    "SessionSpeechMetrics",
+    "SessionTrainingLog",
+    "SessionTrainingRecommendation",
     "Story",
     "StoryInformationUnit",
     "StoryVersion",
