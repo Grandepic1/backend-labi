@@ -79,6 +79,9 @@ def _decode(model: WhisperModel, path: str, language: str | None) -> str:
 
 
 async def transcribe(path: Path) -> str:
+    remote_url = settings.ASR_REMOTE_URL.strip()
+    if remote_url:
+        return await _transcribe_remote(path, remote_url)
     model = await _get_model()
     try:
         text = await asyncio.wait_for(
@@ -90,3 +93,56 @@ async def transcribe(path: Path) -> str:
     if not text:
         raise AsrFailed("no speech recognized")
     return text
+
+
+async def _transcribe_remote(path: Path, base_url: str) -> str:
+    """Offload transcription to the GPU transcribe-model service.
+
+    Error mapping preserves the backend's stable run codes without touching
+    the caller: connect/5xx-model-missing → AsrModelUnavailable
+    (ASR_MODEL_UNAVAILABLE), timeout → AsrTimeout (ASR_TIMEOUT), 422/empty →
+    AsrFailed (ASR_FAILED).
+    """
+    import httpx
+
+    url = base_url.rstrip("/") + "/transcribe"
+    headers = (
+        {"Authorization": f"Bearer {settings.ASR_REMOTE_API_KEY}"}
+        if settings.ASR_REMOTE_API_KEY.strip()
+        else {}
+    )
+    # OG decode params travel per request so the service needs no per-story config.
+    data = {
+        "language": settings.ASR_LANGUAGE or "",
+        "beam_size": str(settings.ASR_BEAM_SIZE),
+        "vad_filter": str(settings.ASR_VAD_FILTER).lower(),
+    }
+    try:
+        content = path.read_bytes()
+    except OSError as exc:
+        raise AsrFailed("recording file missing") from exc
+    files = {"file": (path.name, content, "application/octet-stream")}
+    try:
+        async with httpx.AsyncClient(timeout=settings.ASR_TIMEOUT_SECONDS) as client:
+            resp = await client.post(url, headers=headers, data=data, files=files)
+    except httpx.TimeoutException as exc:
+        raise AsrTimeout(
+            f"remote transcription exceeded {settings.ASR_TIMEOUT_SECONDS}s"
+        ) from exc
+    except httpx.ConnectError as exc:
+        raise AsrModelUnavailable(f"transcribe service unreachable: {exc}") from exc
+    except httpx.HTTPError as exc:
+        raise AsrModelUnavailable(f"transcribe request failed: {exc}") from exc
+    if resp.status_code == 503:
+        raise AsrModelUnavailable(resp.text[:500])
+    if resp.status_code == 422:
+        raise AsrFailed(resp.text[:500] or "no speech recognized")
+    if resp.status_code >= 400:
+        raise AsrFailed(f"transcribe service error {resp.status_code}: {resp.text[:500]}")
+    try:
+        text = resp.json().get("text", "")
+    except ValueError as exc:
+        raise AsrFailed("transcribe service returned invalid JSON") from exc
+    if not str(text).strip():
+        raise AsrFailed("no speech recognized")
+    return str(text).strip()

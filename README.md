@@ -103,6 +103,14 @@ container through the existing bind mount (download the weights once on the
 host), and LM Studio on the host needs
 `AI_BASE_URL=http://host.docker.internal:1234/v1` in `.env`.
 
+Remote ASR (weak server CPU): run `../transcribe-model` on the GPU box
+(`uv run python main.py` → `0.0.0.0:8001`), then set
+`ASR_REMOTE_URL=http://10.66.66.X:8001` (+ `ASR_REMOTE_API_KEY`) in the
+server `.env`. Transcription then goes over HTTP to the GPU box with the OG
+decode params (`ASR_MODEL`/`ASR_LANGUAGE`/`ASR_BEAM_SIZE`/`ASR_VAD_FILTER`
+sent per request); empty `ASR_REMOTE_URL` keeps the OG in-process behavior.
+Only the ASR step moves — `ffmpeg` metrics and the LLM step stay local.
+
 ## Environments (`APP_ENV`)
 
 `APP_ENV=development` (default) vs `APP_ENV=production`:

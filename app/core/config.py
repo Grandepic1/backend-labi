@@ -118,6 +118,13 @@ class Settings(BaseSettings):
     # Hard cap around one transcription.
     ASR_TIMEOUT_SECONDS: int = 1800
 
+    # --- Labi analysis: remote ASR (GPU transcribe-model service) ---
+    # Empty = in-process local transcription (OG behavior). Set to offload,
+    # e.g. ASR_REMOTE_URL=http://10.66.66.X:8001 — the GPU box is assumed
+    # always up, so a configured remote is hard-depended on (no CPU fallback).
+    ASR_REMOTE_URL: str = ""
+    ASR_REMOTE_API_KEY: str = ""
+
     # MySQL connection parts (matches existing .env keys)
     DB_HOST: str = "127.0.0.1"
     DB_PORT: int = 3306
